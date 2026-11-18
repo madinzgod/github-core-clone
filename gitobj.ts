@@ -3,7 +3,7 @@
 // Node standard library only; no state lives here.
 
 import { createHash } from 'node:crypto';
-import { createInflate, deflateSync } from 'node:zlib';
+import { deflateSync, inflateSync } from 'node:zlib';
 
 export type GitObjType = 'commit' | 'tree' | 'blob' | 'tag';
 
@@ -21,8 +21,7 @@ export function sha1Hex(data: Buffer): string {
 }
 
 export function hashObject(type: GitObjType, data: Buffer): string {
-  const header = Buffer.from(`${type} ${data.length}\0`, 'utf8');
-  return sha1Hex(Buffer.concat([header, data]));
+  return createHash('sha1').update(`${type} ${data.length}\0`, 'utf8').update(data).digest('hex');
 }
 
 // ---------------------------------------------------------------- trees
@@ -262,27 +261,27 @@ export interface PackReadResult {
   count: number;
 }
 
-/** Inflate the first zlib stream in `buf`; reports the compressed bytes consumed. */
-function inflateOne(buf: Buffer): Promise<{ raw: Buffer; consumed: number }> {
-  return new Promise((resolve, reject) => {
-    const stream = createInflate();
-    const chunks: Buffer[] = [];
-    stream.on('data', (chunk: Buffer) => chunks.push(chunk));
-    stream.on('error', reject);
-    stream.on('end', () => {
-      const consumed = (stream as unknown as { bytesWritten?: number }).bytesWritten;
-      if (typeof consumed !== 'number' || consumed <= 0) {
-        reject(new Error('inflate did not report consumed bytes'));
-        return;
-      }
-      resolve({ raw: Buffer.concat(chunks), consumed });
-    });
-    stream.end(buf);
-  });
+/**
+ * Inflate the first zlib stream in `buf`; reports the compressed bytes
+ * consumed. Done synchronously: pack entries are small, and a thread-pool
+ * round trip per entry costs far more than the inflate itself. The sync
+ * engine stops at the stream's end and reports exactly how much input it
+ * read (its `bytesWritten`), which is what the next entry's offset needs.
+ */
+function inflateOne(buf: Buffer): { raw: Buffer; consumed: number } {
+  const { buffer, engine } = inflateSync(buf, { info: true }) as unknown as {
+    buffer: Buffer;
+    engine: { bytesWritten?: number };
+  };
+  const consumed = engine.bytesWritten;
+  if (typeof consumed !== 'number' || consumed <= 0) {
+    throw new Error('inflate did not report consumed bytes');
+  }
+  return { raw: buffer, consumed };
 }
 
 /** Parse a whole packfile (as received by receive-pack). Throws on malformed input. */
-export async function readPack(pack: Buffer): Promise<PackReadResult> {
+export function readPack(pack: Buffer): PackReadResult {
   if (pack.length < 12 + 20) throw new Error('pack too short');
   if (pack.toString('ascii', 0, 4) !== 'PACK') throw new Error('pack signature missing');
   const version = pack.readUInt32BE(4);
@@ -324,7 +323,7 @@ export async function readPack(pack: Buffer): Promise<PackReadResult> {
       baseOid = pack.toString('hex', pos, pos + 20);
       pos += 20;
     }
-    const { raw, consumed } = await inflateOne(pack.subarray(pos, end));
+    const { raw, consumed } = inflateOne(pack.subarray(pos, end));
     if (raw.length !== size) throw new Error('pack entry size mismatch');
     pos += consumed;
     if (typeNum >= 1 && typeNum <= 4) {

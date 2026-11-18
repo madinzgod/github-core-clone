@@ -489,9 +489,9 @@ export async function handleReceivePack(ctx: Ctx, repo: RepoRec): Promise<void> 
   let unpackError = '';
   if (packBytes.length > 0) {
     try {
-      const { objects } = await readPack(packBytes);
-      for (const obj of objects.values()) {
-        ctx.store.putObject(repo, obj.type, obj.data);
+      const { objects } = readPack(packBytes);
+      for (const [oid, obj] of objects) {
+        ctx.store.putHashed(repo, oid, obj.type, obj.data);
       }
     } catch (err) {
       unpackOk = false;

@@ -85,6 +85,7 @@ export class Store {
   private nextDbId = 1;
   private nextCommentId = 1;
   private clockTicks = 0;
+  private isoCache = new Map<number, string>();
   seq = 0;
 
   /** Advance the logical clock and return the new epoch second. */
@@ -94,7 +95,14 @@ export class Store {
   }
 
   epochToIso(epoch: number): string {
-    return new Date(epoch * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z');
+    // Pure function of the epoch; the same few epochs recur constantly
+    // (every record's created_at), so memoize instead of re-formatting.
+    let iso = this.isoCache.get(epoch);
+    if (iso === undefined) {
+      iso = new Date(epoch * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z');
+      this.isoCache.set(epoch, iso);
+    }
+    return iso;
   }
 
   nowIso(): string {
@@ -148,7 +156,11 @@ export class Store {
   // ------------------------------------------------------------ git objects
 
   putObject(repo: RepoRec, type: GitObject['type'], data: Buffer): string {
-    const oid = hashObject(type, data);
+    return this.putHashed(repo, hashObject(type, data), type, data);
+  }
+
+  /** Insert an object whose oid the caller already computed (pack ingest). */
+  putHashed(repo: RepoRec, oid: string, type: GitObject['type'], data: Buffer): string {
     if (!repo.objects.has(oid)) {
       repo.objects.set(oid, { type, data });
       repo.seqCounter += 1;
